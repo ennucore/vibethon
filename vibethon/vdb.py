@@ -31,6 +31,10 @@ class CustomPdb(pdb.Pdb):
         self._output_buffer = io.StringIO()
         super().__init__(stdin=self, stdout=self._output_buffer)
 
+        # Convenience: keep a reference to commonly excluded variable names so
+        # we can reuse them across several helper methods.
+        self._EXCLUDED_VARS = {"vdb", "_original_frame", "_name", "_value"}
+
     def set_trace(self, frame=None):
         """Enter debugging session at *frame* immediately.
 
@@ -44,16 +48,18 @@ class CustomPdb(pdb.Pdb):
         
         import traceback
 
-        print("\n🔎 Entering new pdb session!")
-        print(f"Target frame: {frame}")
-        print(f"Target frame locals keys: {list(frame.f_locals.keys())}")
-        print("Stack trace (most recent call last):")
-        traceback.print_stack(frame)
-        print("=" * 50)
+        self.message("\n🔎 Entering new pdb session!")
+        self.message(f"Target frame: {frame}")
+        self.message(f"Target frame locals keys: {list(frame.f_locals.keys())}")
+        self.message("Stack trace (most recent call last):")
+        self.message("".join(traceback.format_stack(frame)))
+        self.message("=" * 50)
 
         # Provide initial context to the LLM
         initial_context = self._gather_initial_context(frame)
-        print(initial_context)
+        # The LLM receives *initial_context* explicitly, but we also show it
+        # in the debugger so humans following along can see the same view.
+        self.message(initial_context)
         self.llm.set_initial_context(initial_context)
         
         # Clear internal state and start interaction in the desired frame.
@@ -63,8 +69,8 @@ class CustomPdb(pdb.Pdb):
         self.curframe = frame
         self.curindex = 0
         
-        print(f"Debugger curframe: {self.curframe}")
-        print(f"Debugger curframe locals keys: {list(self.curframe.f_locals.keys())}")
+        self.message(f"Debugger curframe: {self.curframe}")
+        self.message(f"Debugger curframe locals keys: {list(self.curframe.f_locals.keys())}")
         
         # Create a minimal stack with just the target frame
         self.stack = [(frame, frame.f_lineno)]
@@ -91,8 +97,7 @@ class CustomPdb(pdb.Pdb):
         context_parts.append("\nLocal variables:")
         try:
             from pprint import saferepr
-            safe_locals = {k: v for k, v in frame.f_locals.items() 
-                          if k not in ('e', 'vdb')}
+            safe_locals = self._safe_locals(frame)
             for name, value in safe_locals.items():
                 try:
                     context_parts.append(f"  {name} = {saferepr(value)}")
@@ -147,22 +152,13 @@ class CustomPdb(pdb.Pdb):
         """Show local variables from the original frame, excluding debugger internals."""
         from pprint import saferepr
         
-        # Get the original frame if available
-        original_frame = self.curframe
-        if '_original_frame' in self.curframe.f_locals:
-            original_frame = self.curframe.f_locals['_original_frame']
-            print(f"DEBUG: Using _original_frame for locals: {original_frame}")
-        
-        # Get locals from the original frame
-        frame_locals = original_frame.f_locals
-        
-        # Filter out debugger-related variables and show only user variables
-        safe = {k: v for k, v in frame_locals.items()
-                if k not in ('e', 'vdb', '_original_frame', '_name', '_value') and not k.startswith('__')}
-        
-        if safe:
+        original_frame = self._get_original_frame()
+
+        safe_locals = self._safe_locals(original_frame)
+
+        if safe_locals:
             self.message("Local variables:")
-            for name, value in safe.items():
+            for name, value in safe_locals.items():
                 try:
                     self.message(f"  {name} = {saferepr(value)}")
                 except Exception:
@@ -230,14 +226,7 @@ class CustomPdb(pdb.Pdb):
         
         # Try to execute the command in the original frame's context
         try:
-            # Get the original frame from the traceback if available
-            original_frame = self.curframe
-            
-            # If we have access to the original frame via _original_frame variable in locals
-            if '_original_frame' in self.curframe.f_locals:
-                original_frame = self.curframe.f_locals['_original_frame']
-                print(f"DEBUG: Using _original_frame for execution: {original_frame}")
-                print(f"DEBUG: Original frame locals before: {list(original_frame.f_locals.keys())}")
+            original_frame = self._get_original_frame()
             
             # Use the original frame's globals and locals for execution
             code = compile(line + '\n', '<stdin>', 'single')
@@ -246,11 +235,11 @@ class CustomPdb(pdb.Pdb):
             # Flush changes so the running byte-code can see them
             _locals_to_fast(original_frame)
 
-            if '_original_frame' in self.curframe.f_locals:
-                print(f"DEBUG: Original frame locals after exec & flush: {list(original_frame.f_locals.keys())}")
-                
+            # For consistency, let the LLM know execution succeeded
+            self.message("[Executed expression in current frame]")
+            
         except Exception as e:
-            print(f"DEBUG: Exception in default: {e}")
+            self.message(f"[Error executing expression] {e}")
             # If that fails, fall back to the standard behavior
             super().default('!' + line)
     
@@ -258,9 +247,7 @@ class CustomPdb(pdb.Pdb):
         """Pretty-print the value of an expression in the original frame's context."""
         try:
             # Get the original frame if available
-            original_frame = self.curframe
-            if '_original_frame' in self.curframe.f_locals:
-                original_frame = self.curframe.f_locals['_original_frame']
+            original_frame = self._get_original_frame()
             
             # Evaluate in the original frame's context
             val = eval(arg, original_frame.f_globals, original_frame.f_locals)
@@ -272,10 +259,8 @@ class CustomPdb(pdb.Pdb):
         """Print the value of an expression in the original frame's context."""
         try:
             # Get the original frame if available
-            original_frame = self.curframe
-            if '_original_frame' in self.curframe.f_locals:
-                original_frame = self.curframe.f_locals['_original_frame']
-                
+            original_frame = self._get_original_frame()
+            
             # Evaluate in the original frame's context  
             val = eval(arg, original_frame.f_globals, original_frame.f_locals)
             self.message(repr(val))
@@ -291,18 +276,40 @@ class CustomPdb(pdb.Pdb):
         self.message(f"Current frame locals keys: {list(self.curframe.f_locals.keys())}")
         
         # Show the actual locals values (safely)
-        # Refresh mapping so it reflects current fast-locals
-        _locals_to_fast(self.curframe)
-        frame_locals = self.curframe.f_locals
-        safe_locals = {k: v for k, v in frame_locals.items() 
-                      if k not in ('e', 'vdb', '_original_frame', '_name', '_value') and not k.startswith('__')}
-        
+        _locals_to_fast(self.curframe)  # Ensure mapping is up-to-date.
+        safe_locals = self._safe_locals(self.curframe)
+
         self.message("Safe locals:")
         for name, value in safe_locals.items():
             try:
                 self.message(f"  {name} = {repr(value)}")
             except Exception:
                 self.message(f"  {name} = <unrepresentable>")
+
+    # ------------------------------------------------------------------
+    # Internal utility helpers
+    # ------------------------------------------------------------------
+
+    def _get_original_frame(self, frame=None):
+        """Return the *original* frame associated with *frame* if available.
+
+        The Vibezz instrumentation sometimes stores a reference to the true
+        user-frame under the ``_original_frame`` local.  Centralising the
+        lookup in a helper keeps the call-sites tidy and avoids code
+        duplication.
+        """
+        if frame is None:
+            frame = self.curframe
+
+        return frame.f_locals.get("_original_frame", frame)
+
+    def _safe_locals(self, frame):
+        """Return a copy of *frame*'s locals excluding debugger internals."""
+        return {
+            k: v
+            for k, v in frame.f_locals.items()
+            if k not in self._EXCLUDED_VARS and not k.startswith("__")
+        }
 
 if __name__ == "__main__":
     from llm import DummyLLM

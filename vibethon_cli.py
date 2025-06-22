@@ -264,7 +264,6 @@ class VibethonRunner:
             
             # Parse and instrument the AST
             tree = ast.parse(code, '<string>')
-            tree = self._instrument_ast(tree, '<string>')          # ← CHANGED
             compiled = compile(tree, '<string>', 'exec')
             
             script_globals = {
@@ -278,6 +277,9 @@ class VibethonRunner:
             }
             
             exec(compiled, script_globals)
+            
+            # After execution, automatically instrument the defined functions using Vibezz
+            vibethon.vibezz.vibezz_debugger.auto_instrument(script_globals)
             
         except Exception as e:
             raise
