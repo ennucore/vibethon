@@ -3,17 +3,12 @@ import inspect
 import ast
 import types
 
-# Use the custom Pdb implementation
-from vibethon.llm import ChatGPTPdbLLM
-
 # Mapping from code objects of instrumented functions to their original
 # source lines and the starting line number in the file.  This allows the
 # custom Pdb ``list`` implementation to translate the instrumented frame's
 # *relative* line numbers back to the real ones on disk without resorting to
 # fiddling with ``lineno`` offsets when we build the AST.
 _VIBEZZ_SOURCE_MAP = {}
-
-llm = ChatGPTPdbLLM()
 
 class DebuggerContinue(Exception):
     """Exception used to signal that execution should continue"""

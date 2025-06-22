@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 import shutil
 import textwrap
+import time
 
 # ---------------------------------------------------------------------------
 # Configuration helpers
@@ -131,18 +132,26 @@ class ChatGPTPdbLLM:
     memory_limit:
         The number of user/assistant *turns* (not individual messages) that are
         kept in memory. The system prompt is **always** preserved.
+    interactive_mode:
+        Whether to pause and ask for user feedback after each assistant message.
     """
 
     # NOTE: the public attributes below are referenced by the test-suite – do
     # *not* rename or remove them without adjusting the tests accordingly.
 
-    def __init__(self, system_message: Optional[str] = None, memory_limit: int = 15):
+    def __init__(
+        self,
+        system_message: Optional[str] = None,
+        memory_limit: int = 15,
+        interactive_mode: bool = True,
+    ):
         self.model: str = DEFAULT_MODEL
         self.messages: List[Dict[str, str]] = []  # chat history incl. system message
         self.last_output: str = ""  # buffered stdout coming from pdb
+        self.interactive_mode: bool = interactive_mode
 
         # Persisted so it can be reused by callers if necessary
-        self.system_message: str = system_message or (
+        base_prompt = (
             """
 You are an expert Python programmer and debugger. You understand the internals of Python
 extremely well. You are also AWARE of your limits, and if you are confused by what is happening,
@@ -178,6 +187,24 @@ If you get really stuck and don't know what to do, please don't continue. Stop, 
 In your help message, please use a baby emoji so that the need for help is clear: 👶
             """.strip()
         )
+
+        # Append mode-specific guidance so the assistant knows how to behave.
+        if interactive_mode:
+            mode_hint = (
+                "\n\nThis session is *interactive*. You are encouraged to frequently use the"
+                " `stop_and_ask_user` action whenever you need clarification,"
+                " want to verify an assumption, or wish to teach. Engage the"
+                " user by asking focused questions until you fully understand"
+                " their intent."
+            )
+        else:
+            mode_hint = (
+                "\n\nThis session operates in *YOLO* mode (non-interactive)."
+                " Do **not** use the `stop_and_ask_user` action – always"
+                " respond with an executable `pdb_command` instead."
+            )
+
+        self.system_message: str = (system_message or base_prompt) + mode_hint
         # How many *turns* of memory to keep (one turn = user + assistant)
         self.memory_limit: int = memory_limit
 
@@ -250,6 +277,36 @@ In your help message, please use a baby emoji so that the need for help is clear
         (or the raw text when parsing fails).  A side effect is that the full
         assistant message gets appended to *self.messages* so that the model's
         internal state is updated for the next call.
+
+        If Ctrl-C is pressed at any point during execution, the method will
+        prompt for user feedback and continue the conversation.
+        """
+
+        try:
+            return self._ask_for_next_command_inner()
+        except KeyboardInterrupt:
+            # Ctrl-C at any point triggers user feedback
+            print()  # move to new line after ^C
+            user_feedback = input("user> ")
+            
+            # Append the human feedback to the conversation
+            self.messages.append({"role": "user", "content": user_feedback})
+            
+            # Enforce history limit before next request
+            self._truncate_history()
+            
+            # Continue with a fresh LLM call
+            return self._ask_for_next_command_inner()
+
+    def _ask_for_next_command_inner(self) -> str:
+        """Generate the next debugger command as *plain text*.
+
+        The method constructs a prompt from the initial context (if available)
+        and the most recent *pdb* output, calls the underlying LLM and finally
+        returns *only* the ``command`` field extracted from the JSON response
+        (or the raw text when parsing fails).  A side effect is that the full
+        assistant message gets appended to *self.messages* so that the model's
+        internal state is updated for the next call.
         """
 
         # ------------------------------------------------------------------
@@ -283,49 +340,83 @@ In your help message, please use a baby emoji so that the need for help is clear
         # 2. Call LLM
         # ------------------------------------------------------------------
 
-        response = openai.chat.completions.create(
-            model=self.model,
-            messages=self.messages,
-            temperature=0.2,
-            max_tokens=256,  # Increased to reduce truncation
-        )
+        # Helper: inner function to call the LLM so we can reuse it when the
+        # assistant decides to pause and ask the human for feedback.
 
-        raw_reply_full: str = response.choices[0].message.content.strip()
-        raw_reply: str = self._extract_json_object(raw_reply_full)
+        def _call_llm() -> str:
+            response_inner = openai.chat.completions.create(
+                model=self.model,
+                messages=self.messages,
+                temperature=0.2,
+                max_tokens=256,
+            )
+            return response_inner.choices[0].message.content.strip()
+
+        # First call to the model
+        raw_reply_full: str = _call_llm()
+
+        while True:
+            raw_reply: str = self._extract_json_object(raw_reply_full)
+
+            # ------------------------------------------------------------------
+            # 3. Parse assistant message (best-effort)
+            # ------------------------------------------------------------------
+            command: str
+            explanation: Optional[str] = None
+            action: str = "pdb_command"  # default – backwards compatible
+
+            try:
+                parsed: Any = json.loads(raw_reply)
+                if isinstance(parsed, dict):
+                    command = str(parsed.get("command", raw_reply))
+                    explanation = parsed.get("explanation")
+                    action = str(parsed.get("action", "pdb_command"))
+                else:
+                    command = raw_reply
+            except json.JSONDecodeError:
+                command = raw_reply
+
+
+            if explanation:
+                _print_coloured_box(explanation, title="Explanation", colour=FG_YELLOW)
+                time.sleep(0.5)
+
+            # ------------------------------------------------------------------
+            # 4. Update state; store assistant message
+            # ------------------------------------------------------------------
+            self.messages.append({"role": "assistant", "content": raw_reply})
+            self._save_messages()
+
+            # If the assistant wants to pause and we are in interactive mode →
+            # ask the user for feedback and loop once more.
+            if (
+                action == "stop_and_ask_user"
+                and self.interactive_mode
+            ):
+                user_feedback = input("user> ")
+
+                # Append the human feedback to the conversation and call LLM
+                # again.
+                self.messages.append({"role": "user", "content": user_feedback})
+
+                # Enforce history limit before next request
+                self._truncate_history()
+
+                raw_reply_full = _call_llm()
+                # continue the while loop to parse new assistant message
+                continue
+
+            # Either we are in YOLO mode or the assistant provided a command →
+            # break loop and return.
+            break
 
         # ------------------------------------------------------------------
-        # 3. Parse assistant message (best-effort)
-        # ------------------------------------------------------------------
-
-        command: str
-        explanation: Optional[str] = None
-
-        try:
-            parsed: Any = json.loads(raw_reply)
-            if isinstance(parsed, dict) and "command" in parsed:
-                command = str(parsed["command"])
-                explanation = parsed.get("explanation")
-            else:
-                command = raw_reply  # Fallback to raw string
-        except json.JSONDecodeError:
-            command = raw_reply  # keep behaviour identical to old version
-
-        # ------------------------------------------------------------------
-        # 4. Update state & persist conversation
-        # ------------------------------------------------------------------
-
-        self.messages.append({"role": "assistant", "content": raw_reply})
-        self._save_messages()
-
-        # ------------------------------------------------------------------
-        # 5. Echo command back to *pdb* (stdout)
+        # 5. Echo nicely formatted content to terminal
         # ------------------------------------------------------------------
 
         _print_coloured_box(command, title="Command", colour=FG_GREEN)
 
-        if explanation:
-            _print_coloured_box(explanation, title="Explanation", colour=FG_YELLOW)
-
+        # Remember last assistant command (for tests maybe?)
         return command
 
     def receive_pdb_output(self, output: str) -> None:

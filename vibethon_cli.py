@@ -11,97 +11,12 @@ Usage:
 import sys
 import os
 import ast
-import types
-import importlib.util
-import importlib.machinery
-from importlib.abc import MetaPathFinder, Loader
 import argparse
-from pathlib import Path
-
-# Import from the new module structure
-from vibethon.vdb import CustomPdb
-from vibethon.llm import ChatGPTPdbLLM, DummyLLM
-import vibethon.vibezz                      # ← UPDATED – pull in the Vibezz framework
-import inspect
-import runpy
 
 # Add the current directory to Python path so we can import local modules
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
-
-# Use the same LLM object that Vibezz is already configured with
-llm = vibethon.vibezz.llm                   # ← UPDATED
-
-# Provide a standalone pdb instance (only for on-the-fly use)
-vdb = CustomPdb(llm)               # ← NEW
-
-class VDBDebugger:
-    """Simplified VDB-based debugger for function instrumentation tracking"""
-    
-    def __init__(self):
-        self.instrumented_functions = set()
-        self.llm = llm
-        self.vdb = vdb
-    
-    def instrument_function(self, func):
-        """VDB-based function instrumentation"""
-        import inspect
-        
-        # Retrieve the function's source and starting line number
-        source_lines, starting_line = inspect.getsourcelines(func)
-        source = "".join(source_lines)
-
-        # Parse and adjust line numbers
-        tree = ast.parse(source)
-        ast.increment_lineno(tree, starting_line - 1)
-
-        func_def = tree.body[0]
-        new_body = []
-        
-        for stmt in func_def.body:
-            # Wrap each statement in try/except that uses VDB
-            try_node = ast.Try(
-                body=[stmt],
-                handlers=[ast.ExceptHandler(
-                    type=ast.Name(id='Exception', ctx=ast.Load()),
-                    name='e',
-                    body=[
-                        # vdb.set_trace()
-                        ast.Expr(
-                            value=ast.Call(
-                                func=ast.Attribute(
-                                    value=ast.Name(id='vdb', ctx=ast.Load()),
-                                    attr='set_trace',
-                                    ctx=ast.Load(),
-                                ),
-                                args=[],
-                                keywords=[],
-                            )
-                        ),
-                    ]
-                )],
-                orelse=[],
-                finalbody=[]
-            )
-            
-            ast.copy_location(try_node, stmt)
-            new_body.append(try_node)
-
-        func_def.body = new_body
-        ast.fix_missing_locations(tree)
-
-        compiled = compile(
-            tree,
-            filename=func.__code__.co_filename,
-            mode='exec'
-        )
-        
-        # Execute in function's globals with VDB available
-        namespace = func.__globals__.copy()
-        namespace['vdb'] = self.vdb
-        exec(compiled, namespace)
-        return namespace[func.__name__]
 
 class PostImportHook:
     """Intercept every import, then instrument the freshly-loaded module."""
@@ -129,14 +44,11 @@ class PostImportHook:
             print(f"⚠️  Failed to instrument {module.__name__}: {err}")
         return module
 
-# Create global Vibezz debugger instance
-vdb_debugger = vibethon.vibezz.vibezz_debugger
-
 class VibethonRunner:
     """Main runner for vibethon command"""
     
-    def __init__(self):
-        self.debugger = vdb_debugger
+    def __init__(self, debugger):
+        self.debugger = debugger
         self.post_import_hook = PostImportHook()
         
     def setup_environment(self):
@@ -197,8 +109,6 @@ class VibethonRunner:
             module = importlib.util.module_from_spec(spec)
 
             # Make debugger helpers visible before code runs
-            module.CustomPdb = CustomPdb
-            module.llm       = llm
             sys.modules[module_name] = module
             
             # Execute the module (this will trigger import hook for any imports)
@@ -206,7 +116,7 @@ class VibethonRunner:
 
             # Instrument the main module's functions
             print(f"🔧 Instrumenting main module: {module_name}")
-            vibethon.vibezz.vibezz_debugger.auto_instrument(module.__dict__)
+            self.debugger.auto_instrument(module.__dict__)
 
             # ── Run entry-point ────────────────────────────────────────────
             if callable(module.__dict__.get("main")):
@@ -272,14 +182,12 @@ class VibethonRunner:
                 '__doc__': None,
                 '__package__': None,
                 'sys': sys,
-                'CustomPdb': CustomPdb,     # NEW
-                'llm': llm,                 # NEW
             }
             
             exec(compiled, script_globals)
             
             # After execution, automatically instrument the defined functions using Vibezz
-            vibethon.vibezz.vibezz_debugger.auto_instrument(script_globals)
+            self.debugger.auto_instrument(script_globals)
             
         except Exception as e:
             raise
@@ -306,10 +214,19 @@ Examples:
     group.add_argument('-c', '--code', help='Run code string')
     
     parser.add_argument('args', nargs='*', help='Arguments to pass to the script/module')
+    parser.add_argument('--yolo', action='store_true',
+                       help='Run in non-interactive mode without prompting for user input')
     
     args = parser.parse_args()
     
-    runner = VibethonRunner()
+    # Set VIBETHON_INTERACTIVE_MODE based on --yolo flag
+    os.environ['VIBETHON_INTERACTIVE_MODE'] = str(not args.yolo).lower()
+
+    # Import after setting the environment variable
+    import vibethon.vibezz
+    import vibethon
+    
+    runner = VibethonRunner(vibethon.vibezz.vibezz_debugger)
     
     try:
         if args.script:
