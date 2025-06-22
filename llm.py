@@ -1,9 +1,14 @@
-import openai
+from models import models
+from openai import OpenAI
 import time
 
+openai = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+)
+
 class ChatGPTPdbLLM:
-    def __init__(self, model="sonnet-4-sonnet", system_message=None, memory_limit=15):
-        self.model = model
+    def __init__(self, system_message=None, memory_limit=15):
+        self.model = "anthropic/claude-sonnet-4"
         self.messages = []
         self.last_output = ""
         self.system_message = system_message or (
@@ -24,6 +29,8 @@ You are in a pdb session, which in this context means that the line you begin th
 
 Use `continue`, rather than `quit`.
 
+Note that expressions that begin with letters that are pdb commands, should be preceded by a `!` to be interpreted as an expression (eg variable assignment `a=2` should be `!a=2`)
+
 At each step you are interacting with the intern, you should emit a JSON that adheres to the following
 typed dict:
 
@@ -33,39 +40,11 @@ class DebuggerStep(T.TypedDict):
     command: str
     explanation: str
 
-Go step-by-step as you reason. Think carefully.
+Go step-by-step as you reason. Think carefully. Please just return the JSON, no other text.
 
-### EXAMPLE SESSION ###
-
-INPUT:
-Stack trace (most recent call last):
-  File "/Users/nudge/code/vibethon/vibezz.py", line 369, in <module>
-    faulty_function()
-  File "/Users/nudge/code/vibethon/vibezz.py", line 311, in faulty_function
-    a = 0
-    foo = 20 / a  # This will trigger debugger
-
-OUTPUT:
-{
-    "command": "!foo = 20 / 1e-6",
-    "explanation": "The user probably intended a to be small but not zero, as that will trigger an exception"
-}
-
-INPUT: ""
-OUTPUT:
-{
-    "command": "continue",
-    "explanation": "This should have fixed the problem, so we can continue"
-}
-
-### END OF EXAMPLE SESSION ###
-
+If you get really stuck and don't know what to do, please don't continue. Stop, and let me know that you need help.
+In your help message, please use a baby emoji so that the need for help is clear: 👶
             """.strip()
-            # "You are in a custom pdb session."
-            # "Try modify the local variables to fix the execution at runtime!"
-            # "Note that you can do this by `!a=2` eg. Send the exact command, no placeholders. Please use this!!"
-            # "You can also use commands like `l`, `n`, etc. "
-            # "Justify your answer and print the justification in the output."
         )
         self.memory_limit = memory_limit  # How many turns of memory to keep
         self._init_messages()
@@ -79,11 +58,19 @@ OUTPUT:
 
     def ask_for_next_command(self):
         # Compose the user message, referencing the last output and prompt
-        assert self.last_output, "No last output to reference"
-        user_content = (
-            f"Debugger output:\n{self.last_output.strip()}\n"
-            "Emit the next output dictionary after this line:\n"
-        )
+        if self.messages == []:
+            user_content = (
+                "This is the start of a debugging session.\n"
+                f"Use this initial context to help choose the first debugging command:\n{getattr(self, 'initial_context', '').strip()}\n"
+                "Emit the first debugging command as JSON. Please format it as JSON ALWAYS. Do not include any other text outside the JSON:\n"
+            )
+        else:
+            user_content = (
+                f"Initial context:\n{getattr(self, 'initial_context', '').strip()}\n"
+                f"Debugger output:\n{self.last_output.strip()}\n"
+                "Emit the next output dictionary after this line. Please format it as JSON ALWAYS. Do not include any other text outside the JSON:\n"
+            )
+        
         self.messages.append({
             "role": "user",
             "content": user_content
@@ -91,50 +78,59 @@ OUTPUT:
 
         # Keep only the most recent N turns of memory (plus system prompt)
         if len(self.messages) > self.memory_limit + 1:
-            # Always keep the system prompt at index 0
             self.messages = [self.messages[0]] + self.messages[-self.memory_limit:]
 
         response = openai.chat.completions.create(
             model=self.model,
             messages=self.messages,
             temperature=0.2,
-            max_tokens=64,
+            max_tokens=256,  # Increased to reduce truncation
         )
-        # Parse the response as a JSON object, if possible, to extract the command and explanation
         import json
 
-        raw_reply = response.choices[0].message.content.strip()
+        raw_reply_full = response.choices[0].message.content.strip()
+        # Try to extract the first JSON object by looking for the first '{' and last '}'
+        start = raw_reply_full.find('{')
+        end = raw_reply_full.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            raw_reply = raw_reply_full[start:end+1]
+        else:
+            raw_reply = raw_reply_full
+
         explanation = None
+        command = None
         try:
             parsed = json.loads(raw_reply)
             if isinstance(parsed, dict) and "command" in parsed:
                 command = parsed["command"]
                 explanation = parsed.get("explanation")
             else:
-                # Fallback: if not a dict or missing "command", use the raw reply
                 command = raw_reply
         except Exception:
             # If not valid JSON, just use the raw reply
             command = raw_reply
 
         self.messages.append({"role": "assistant", "content": raw_reply})
+
         # Save self.messages to a file for debugging/auditing
         try:
             with open("llm_messages.json", "w", encoding="utf-8") as f:
-                import json
                 json.dump(self.messages, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"Warning: Failed to save llm_messages.json: {e}")
+        
         print(command)
         if explanation:
             print(f"Explanation: {explanation}")
-        input("Press Enter to continue...")
+        # input("Press Enter to continue...")
         return command
 
     def receive_pdb_output(self, output):
-        # Store the latest output for context in the next prompt
         print(output, end="")
         self.last_output = output
+    
+    def set_initial_context(self, context):
+        self.initial_context = context
 
 
 

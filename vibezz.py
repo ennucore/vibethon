@@ -3,6 +3,7 @@ import traceback
 import inspect
 import ast
 import types
+import importlib
 
 # Use the custom Pdb implementation
 from llm import ChatGPTPdbLLM
@@ -36,13 +37,14 @@ class VibezzDebugger:
         
         # Find all functions in the module
         functions_to_instrument = []
+        module_name = module_globals.get("__name__", None)
+        
         for name, obj in list(module_globals.items()):
-            if (isinstance(obj, types.FunctionType) and 
+            # Only instrument functions that are defined *in this module*
+            if (isinstance(obj, types.FunctionType) and
                 not name.startswith('_') and
-                name not in ['instrument_function'] and
-                obj.__module__ in ['__main__', None] and
+                obj.__module__ == module_name and
                 obj.__code__ not in self.instrumented_functions):
-                
                 functions_to_instrument.append((name, obj))
         
         # Instrument each function
@@ -235,6 +237,20 @@ def instrument_function(func):
                 type=ast.Name(id='Exception', ctx=ast.Load()),
                 name='e',
                 body=[
+                    # Get the original frame where the exception occurred
+                    ast.Assign(
+                        targets=[ast.Name(id='_original_frame', ctx=ast.Store())],
+                        value=ast.Attribute(
+                            value=ast.Attribute(
+                                value=ast.Name(id='e', ctx=ast.Load()),
+                                attr='__traceback__',
+                                ctx=ast.Load()
+                            ),
+                            attr='tb_frame',
+                            ctx=ast.Load()
+                        )
+                    ),
+                    
                     # vdb = CustomPdb(llm)
                     ast.Assign(
                         targets=[ast.Name(id='vdb', ctx=ast.Store())],
@@ -244,7 +260,8 @@ def instrument_function(func):
                             keywords=[]
                         )
                     ),
-                    # vdb.set_trace(e.__traceback__.tb_frame)
+                    
+                    # vdb.set_trace(_original_frame)
                     ast.Expr(
                         value=ast.Call(
                             func=ast.Attribute(
@@ -253,15 +270,7 @@ def instrument_function(func):
                                 ctx=ast.Load(),
                             ),
                             args=[
-                                ast.Attribute(
-                                    value=ast.Attribute(
-                                        value=ast.Name(id='e', ctx=ast.Load()),
-                                        attr='__traceback__',
-                                        ctx=ast.Load()
-                                    ),
-                                    attr='tb_frame',
-                                    ctx=ast.Load()
-                                ),
+                                ast.Name(id='_original_frame', ctx=ast.Load())
                             ],
                             keywords=[],
                         )
@@ -292,7 +301,13 @@ def instrument_function(func):
         mode='exec'
     )
     namespace = {}
-    exec(compiled, func.__globals__, namespace)
+    globals_dict = func.__globals__
+
+    # ensure the debugger helpers are visible
+    globals_dict.setdefault("CustomPdb", CustomPdb)
+    globals_dict.setdefault("llm", llm)   # llm is the global ChatGPTPdbLLM instance
+
+    exec(compiled, globals_dict, namespace)
     instrumented = namespace[func.__name__]
 
     # Register mapping for custom Pdb list command
@@ -304,74 +319,73 @@ def instrument_function(func):
 
     return instrumented
 
-# Test functions
-def faulty_function():
-    print("Starting faulty function...")
-    
-    a = 2 / 0  # This will trigger debugger
-    
-    b = 1
-    print(f'b: {b}, a: {a}')
-    
-    c = [1, 2, 3]
-    d = c[10]  # This will also trigger debugger
-    
-    print(f'c: {c}, d: {d}')
-    
-    e = "success!"
-    print(f'Final result: {e}')
 
-def another_test():
-    x = 5
-    y = 0
-    z = x / y  # Another error
-    print(f"Result: {z}")
-
-def working_function():
-    print("This function works perfectly!")
-    result = 2 + 2
-    print(f"2 + 2 = {result}")
-    return result
-
-def complex_function():
-    print("Testing complex operations...")
-    
-    # This will work
-    data = [1, 2, 3, 4, 5]
-    print(f"Data: {data}")
-    
-    # This will fail
-    bad_index = data[100]
-    
-    # This will also fail if we continue
-    division_result = 10 / 0
-    
-    # This should work if we fix the above
-    final_result = sum(data)
-    print(f"Sum: {final_result}")
 
 if __name__ == "__main__":
     print("🚀 Starting Vibezz - Enhanced Python Debugger")
     print("=" * 50)
-    
-    # Automatically instrument all functions
-    vibezz_debugger.auto_instrument()
+
     
     print("\n" + "=" * 50)
     print("🎯 Running test functions...")
     print("=" * 50)
     
-    # Now all functions are automatically instrumented
-    print("\n1. Testing working_function...")
-    working_function()
-    
-    print("\n2. Testing faulty_function...")
-    faulty_function()
-    
-    print("\n3. Testing another_test...")
-    another_test()
-    
-    print("\n4. Testing complex_function...")
-    complex_function()
-    
+    # ------------------------------------------------------------
+    # Dynamically load demo functions from ``no_exceptions_only_vibes``
+    # ------------------------------------------------------------
+
+    try:
+        vibes_mod = importlib.import_module("no_exceptions_only_vibes")
+    except ModuleNotFoundError:
+        print("❌ Module 'no_exceptions_only_vibes' not found. Aborting.")
+        sys.exit(1)
+
+    # Instrument functions inside that module so our debugger hooks are active
+    vibezz_debugger.auto_instrument(module_globals=vibes_mod.__dict__)
+
+    # Collect all user-defined functions (skip private/dunder)
+    tests = [
+        (name, obj) for name, obj in vibes_mod.__dict__.items()
+        if isinstance(obj, types.FunctionType) and not name.startswith("__")
+    ]
+
+    if not tests:
+        print("⚠️  No callable functions found in 'no_exceptions_only_vibes'. Nothing to run.")
+        sys.exit(0)
+
+    # ---- Allow selection of a subset of tests by index (1-based) ----
+    # Specify the indices of the tests you want to run (1-based)
+    SELECTED_TEST_INDICES = [0,6,10]  # <-- Change this list to select which tests to run
+
+    # Filter the tests list to only include the selected indices
+    selected_tests = [
+        tests[i - 1] for i in SELECTED_TEST_INDICES
+        if 1 <= i <= len(tests)
+    ]
+
+    if not selected_tests:
+        print("⚠️  No tests selected. Please update SELECTED_TEST_INDICES.")
+        sys.exit(0)
+
+    passed, failed = 0, 0
+
+    for idx, (name, fn) in enumerate(selected_tests, 1):
+        print(f"\n{idx}. Testing {name}() ...")
+        try:
+            result = fn()
+            print(f"✅ {name} executed successfully – return value: {result}")
+            passed += 1
+        except Exception as e:
+            print(f"❌ {name} raised an exception: {e}")
+            import traceback; traceback.print_exc()
+            failed += 1
+
+    print("\n" + "=" * 50)
+    print(f"Test summary: {passed} passed / {passed + failed} total")
+
+    if failed == 0:
+        print("🎉 All functions executed without unhandled exceptions!")
+    else:
+        print("⚠️  Some functions failed – see details above.")
+
     print("\n✅ Vibezz debugging session complete!") 

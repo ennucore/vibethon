@@ -18,6 +18,9 @@ import importlib.machinery
 from importlib.abc import MetaPathFinder, Loader
 import argparse
 from pathlib import Path
+import vibezz                      # ← NEW – pull in the Vibezz framework
+import inspect
+import runpy
 
 # Add the current directory to Python path so we can import local modules
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -28,9 +31,11 @@ if current_dir not in sys.path:
 from vdb import CustomPdb
 from llm import ChatGPTPdbLLM, DummyLLM
 
-# Create global LLM and VDB instances
-llm = DummyLLM()
-vdb = CustomPdb(llm)
+# Use the same LLM object that Vibezz is already configured with
+llm = vibezz.llm
+
+# Provide a standalone pdb instance (only for on-the-fly use)
+vdb = CustomPdb(llm)               # ← NEW
 
 class VDBDebugger:
     """Simplified VDB-based debugger for function instrumentation tracking"""
@@ -99,62 +104,51 @@ class VDBDebugger:
         exec(compiled, namespace)
         return namespace[func.__name__]
 
-# Create global VDB debugger instance
-vdb_debugger = VDBDebugger()
-
-class VibethonImportHook(MetaPathFinder, Loader):
-    """Custom import hook that automatically instruments functions in imported modules"""
+class VibethonImportHook:
+    """Import hook that instruments modules as they're imported"""
     
     def __init__(self, debugger):
         self.debugger = debugger
-        self.original_finder = None
-        
+        self.instrumented_modules = set()
+    
     def find_spec(self, fullname, path, target=None):
-        """Find module spec and mark it for instrumentation"""
-        # Don't instrument built-in modules or our own debugger modules
-        if (fullname in sys.builtin_module_names or 
-            fullname.startswith('vdb') or
-            fullname.startswith('vibethon') or 
-            fullname.startswith('llm') or
-            fullname in ['__main__']):
+        """Intercept module imports and instrument them"""
+        # Only skip already instrumented modules
+        if fullname in self.instrumented_modules:
             return None
             
-        # Use the default import machinery to find the spec
-        for finder in sys.meta_path:
-            if finder is self:
-                continue
-            spec = finder.find_spec(fullname, path, target)
-            if spec is not None:
-                # Wrap the loader to add instrumentation
-                if hasattr(spec.loader, 'exec_module'):
-                    original_exec = spec.loader.exec_module
-                    spec.loader.exec_module = lambda module: self._exec_with_instrumentation(module, original_exec)
-                return spec
-        return None
+        return None  # Let normal import proceed, we'll instrument after
     
-    def _exec_with_instrumentation(self, module, original_exec):
-        """Execute module and then instrument all its functions"""
-        # Execute the module normally first
-        original_exec(module)
-        
-        # Now instrument all functions in the module
-        functions_instrumented = 0
-        for name, obj in list(module.__dict__.items()):
-            if (isinstance(obj, types.FunctionType) and 
-                not name.startswith('_') and
-                obj.__module__ == module.__name__ and
-                obj.__code__ not in self.debugger.instrumented_functions):
-                
-                try:
-                    instrumented_func = self.debugger.instrument_function(obj)
-                    setattr(module, name, instrumented_func)
-                    self.debugger.instrumented_functions.add(obj.__code__)
-                    functions_instrumented += 1
-                except Exception as e:
-                    print(f"⚠️  Failed to instrument {module.__name__}.{name}: {e}")
-        
-        if functions_instrumented > 0:
-            print(f"🔧 Auto-instrumented {functions_instrumented} functions in {module.__name__}")
+    def instrument_module(self, module):
+        """Instrument a module after it's been imported"""
+        if (module.__name__ in self.instrumented_modules or
+            hasattr(module, '__file__') and module.__file__ is None):  # Built-in modules
+            return
+            
+        try:
+            # Try to instrument any module with Python source files
+            if hasattr(module, '__file__') and module.__file__ and module.__file__.endswith('.py'):
+                print(f"🔧 Instrumenting module: {module.__name__}")
+                vibezz.vibezz_debugger.auto_instrument(module.__dict__)
+                self.instrumented_modules.add(module.__name__)
+        except Exception as e:
+            print(f"⚠️  Failed to instrument {module.__name__}: {e}")
+            # Don't add to instrumented_modules so we can retry later if needed
+
+class PostImportHook:
+    """Hook to instrument modules after they're imported"""
+    
+    def __init__(self, import_hook):
+        self.import_hook = import_hook
+        self.original_import = __builtins__.__import__
+    
+    def __call__(self, name, globals=None, locals=None, fromlist=(), level=0):
+        module = self.original_import(name, globals, locals, fromlist, level)
+        self.import_hook.instrument_module(module)
+        return module
+
+# Create global Vibezz debugger instance
+vdb_debugger = vibezz.vibezz_debugger      # was: vdb_debugger = VDBDebugger()
 
 class VibethonRunner:
     """Main runner for vibethon command"""
@@ -162,141 +156,98 @@ class VibethonRunner:
     def __init__(self):
         self.debugger = vdb_debugger
         self.import_hook = VibethonImportHook(self.debugger)
+        self.post_import_hook = PostImportHook(self.import_hook)
         
     def setup_environment(self):
         """Setup the vibethon environment"""
-        # Install our import hook
+        # Install our import hooks
         if self.import_hook not in sys.meta_path:
             sys.meta_path.insert(0, self.import_hook)
         
-        # Setup custom exception handling that uses VDB
-        old_excepthook = sys.excepthook
-        
-        def vibethon_excepthook(exc_type, exc_value, exc_traceback):
-            """Custom exception handler that starts the debugger REPL"""
-            if exc_type is KeyboardInterrupt:
-                old_excepthook(exc_type, exc_value, exc_traceback)
-                return
-                
-            print(f"\n🐛 ERROR DETECTED: {exc_type.__name__}: {exc_value}")
-            print("=" * 50)
+        # Install post-import hook
+        __builtins__.__import__ = self.post_import_hook
             
-            # Use VDB to debug at the error location
-            if exc_traceback:
-                self.debugger.vdb.set_trace(exc_traceback.tb_frame)
-        
-        sys.excepthook = vibethon_excepthook
-        
         print("🚀 Vibethon environment initialized!")
         print("   - Automatic function instrumentation: ON")
         print("   - VDB error handling: ON")
         print("   - LLM-powered debugging: ON")
         print()
     
-    def _instrument_ast(self, tree):
-        """Transform AST to instrument all function definitions with error handling"""
-        class FunctionInstrumenter(ast.NodeTransformer):
-            def __init__(self, debugger):
-                self.debugger = debugger
-                self.functions_instrumented = 0
-            
-            def visit_FunctionDef(self, node):
-                # First, visit child nodes (for nested functions)
-                self.generic_visit(node)
-                
-                # Don't instrument special methods
-                if node.name.startswith('_'):
-                    return node
-                
-                # Create new body with each statement wrapped in try/except using VDB
-                new_body = []
-                for stmt in node.body:
-                    try_node = ast.Try(
-                        body=[stmt],
-                        handlers=[ast.ExceptHandler(
-                            type=ast.Name(id='Exception', ctx=ast.Load()),
-                            name='e',
-                            body=[
-                                # vdb.set_trace()
-                                ast.Expr(
-                                    value=ast.Call(
-                                        func=ast.Attribute(
-                                            value=ast.Name(id='vdb', ctx=ast.Load()),
-                                            attr='set_trace',
-                                            ctx=ast.Load()
-                                        ),
-                                        args=[],
-                                        keywords=[]
-                                    )
-                                )
-                            ]
-                        )],
-                        orelse=[],
-                        finalbody=[]
-                    )
-                    
-                    ast.copy_location(try_node, stmt)
-                    new_body.append(try_node)
-                
-                node.body = new_body
-                self.functions_instrumented += 1
-                return node
-        
-        # Apply the transformation
-        instrumenter = FunctionInstrumenter(self.debugger)
-        instrumented_tree = instrumenter.visit(tree)
-        ast.fix_missing_locations(instrumented_tree)
-        
-        if instrumenter.functions_instrumented > 0:
-            print(f"🔧 Pre-instrumenting {instrumenter.functions_instrumented} functions...")
-        
-        return instrumented_tree
-    
+    # ------------------------------------------------------------------
+    # Helper – pull out the  `if __name__ == '__main__':`  block
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_main_block(src: str, filename: str):
+        import ast
+        tree = ast.parse(src, filename=filename)
+        for node in tree.body:
+            if (isinstance(node, ast.If)
+                and isinstance(node.test, ast.Compare)
+                and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == '__name__'
+                and any(isinstance(c, ast.Constant) and c.value == '__main__'
+                        for c in node.test.comparators)):
+                mod = ast.Module(body=node.body, type_ignores=[])
+                return compile(ast.fix_missing_locations(mod), filename, 'exec')
+        return None
+
+    # ------------------------------------------------------------------
+    # Actual runner
+    # ------------------------------------------------------------------
     def run_script(self, script_path, args=None):
-        """Run a Python script with VDB instrumentation"""
+        """Import script, instrument it, then run its entry-point."""
         if not os.path.exists(script_path):
             print(f"❌ Error: Script '{script_path}' not found")
             return 1
-            
-        # Setup sys.argv
+
         if args is None:
             args = []
         sys.argv = [script_path] + args
-        
-        # Setup environment
-        self.setup_environment()
-        
-        # Read and execute the script
+
         try:
-            with open(script_path, 'r') as f:
-                code = f.read()
+            import importlib.util, textwrap
+            from pathlib import Path
+
+            abs_path   = Path(script_path).resolve()
+            # Use the real module name so auto_instrument() recognises it
+            module_name = abs_path.stem
+            # If it was already imported earlier, drop it so we get a fresh copy
+            sys.modules.pop(module_name, None)
+
+            print(f"🎯 Importing '{abs_path}' …")
+            spec   = importlib.util.spec_from_file_location(module_name, abs_path)
+            module = importlib.util.module_from_spec(spec)
+
+            # Make debugger helpers visible before code runs
+            module.CustomPdb = CustomPdb
+            module.llm       = llm
+            sys.modules[module_name] = module
             
-            # Parse and instrument the AST
-            filename = os.path.abspath(script_path)
-            tree = ast.parse(code, filename)
-            tree = self._instrument_ast(tree)
-            compiled = compile(tree, filename, 'exec')
-            
-            # Create script globals with VDB available
-            script_globals = {
-                '__name__': '__main__',
-                '__file__': filename,
-                '__doc__': None,
-                '__package__': None,
-                'sys': sys,
-                'vdb': self.debugger.vdb,  # Make VDB available to instrumented code
-            }
-            
-            print(f"🎯 Running '{script_path}' with VDB...")
-            print("=" * 50)
-            
-            # Execute the instrumented code
-            exec(compiled, script_globals)
-            
-        except Exception as e:
-            # This will be caught by our VDB exception handler
+            # Execute the module (this will trigger import hook for any imports)
+            spec.loader.exec_module(module)
+
+            # Instrument the main module's functions
+            print(f"🔧 Instrumenting main module: {module_name}")
+            vibezz.vibezz_debugger.auto_instrument(module.__dict__)
+
+            # ── Run entry-point ────────────────────────────────────────────
+            if callable(module.__dict__.get("main")):
+                print("▶️  Calling main()")
+                module.main()
+            else:
+                with open(abs_path, 'r', encoding='utf8') as fh:
+                    src = fh.read()
+                code_obj = self._extract_main_block(src, str(abs_path))
+                if code_obj:
+                    print("▶️  Executing script's __main__ block")
+                    exec(code_obj, module.__dict__)
+                else:
+                    print("⚠️  No entry point found (main() or __main__ block)")
+
+        except Exception:
+            # Unhandled exceptions will trigger CustomPdb via the excepthook
             raise
-        
+
         return 0
     
     def run_module(self, module_name, args=None):
@@ -304,8 +255,6 @@ class VibethonRunner:
         if args is None:
             args = []
         sys.argv = ['-m', module_name] + args
-        
-        self.setup_environment()
         
         try:
             print(f"🎯 Running module '{module_name}' with vibethon...")
@@ -331,15 +280,13 @@ class VibethonRunner:
             args = []
         sys.argv = ['-c'] + args
         
-        self.setup_environment()
-        
         try:
             print("🎯 Running code with vibethon...")
             print("=" * 50)
             
             # Parse and instrument the AST
             tree = ast.parse(code, '<string>')
-            tree = self._instrument_ast(tree)
+            tree = self._instrument_ast(tree, '<string>')          # ← CHANGED
             compiled = compile(tree, '<string>', 'exec')
             
             script_globals = {
@@ -348,7 +295,8 @@ class VibethonRunner:
                 '__doc__': None,
                 '__package__': None,
                 'sys': sys,
-                'vdb': self.debugger.vdb,  # Make VDB available
+                'CustomPdb': CustomPdb,     # NEW
+                'llm': llm,                 # NEW
             }
             
             exec(compiled, script_globals)
