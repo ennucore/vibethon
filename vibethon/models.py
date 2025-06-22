@@ -38,6 +38,7 @@ class Anthropic(BaseModel):
     claude2_1_beta: str = "anthropic/claude-2.1:beta"
     claude2_0: str = "anthropic/claude-2.0"
     claude2_0_beta: str = "anthropic/claude-2.0:beta"
+    claude_sonnet_4: str = "anthropic/claude-sonnet-4"
 
 
 class Google(BaseModel):
