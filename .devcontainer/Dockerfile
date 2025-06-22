@@ -1,5 +1,7 @@
 FROM ubuntu:24.04
 
+ENV NODE_VERSION=24.0.1
+
 # Install system dependencies
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     fish \
@@ -23,6 +25,15 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
 RUN useradd -m -s /usr/bin/fish user \
     && echo "user ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/user \
     && chmod 0440 /etc/sudoers.d/user
+
+
+# Install NodeJS
+RUN case $(uname -m) in \
+    x86_64) ARCH=x64;; \
+    aarch64) ARCH=arm64;; \
+    *) echo "Unsupported architecture"; exit 1;; \
+    esac && \
+    curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz | tar -xJf - -C /usr/local --strip-components=1
 
 # Switch to user
 USER user
