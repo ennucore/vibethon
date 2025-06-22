@@ -5,8 +5,15 @@ import ast
 import types
 
 # Use the custom Pdb implementation
-from vdb import CustomPdb
 from llm import ChatGPTPdbLLM
+from vdb import CustomPdb
+
+# Mapping from code objects of instrumented functions to their original
+# source lines and the starting line number in the file.  This allows the
+# custom Pdb ``list`` implementation to translate the instrumented frame's
+# *relative* line numbers back to the real ones on disk without resorting to
+# fiddling with ``lineno`` offsets when we build the AST.
+_VIBEZZ_SOURCE_MAP = {}
 
 llm = ChatGPTPdbLLM()
 
@@ -58,6 +65,7 @@ class VibezzDebugger:
         print("Multiple frames available:")
         for i, frame in enumerate(frames):
             code = frame.tb_frame.f_code
+            # Fix: Use tb_lineno instead of f_lineno
             print(f"  {i}: {code.co_filename}:{frame.tb_lineno} in {code.co_name}")
         
         while True:
@@ -207,13 +215,12 @@ def instrument_function(func):
     source_lines, starting_line = inspect.getsourcelines(func)
     source = "".join(source_lines)
 
-    # Parse the function body into an AST and then offset all line numbers so
-    # that they are relative to the *file*, not the extracted snippet starting
-    # at line 1.  Without this adjustment the debugger thinks everything starts
-    # at the top of the file which is exactly the behaviour we are trying to
-    # fix.
+    # Parse the function body into an AST and then shift all node line numbers
+    # so they line up with the real file.  This ensures that *built-in* pdb
+    # commands such as `list` and `where` work out of the box without extra
+    # translation layers.
     tree = ast.parse(source)
-    ast.increment_lineno(tree, starting_line - 1)  # align with real file lines
+    ast.increment_lineno(tree, starting_line - 1)
 
     func_def = tree.body[0]  # assumes the first node is the FunctionDef
 
@@ -237,7 +244,7 @@ def instrument_function(func):
                             keywords=[]
                         )
                     ),
-                    # vdb.set_trace()
+                    # vdb.set_trace(e.__traceback__.tb_frame)
                     ast.Expr(
                         value=ast.Call(
                             func=ast.Attribute(
@@ -245,7 +252,17 @@ def instrument_function(func):
                                 attr='set_trace',
                                 ctx=ast.Load(),
                             ),
-                            args=[],
+                            args=[
+                                ast.Attribute(
+                                    value=ast.Attribute(
+                                        value=ast.Name(id='e', ctx=ast.Load()),
+                                        attr='__traceback__',
+                                        ctx=ast.Load()
+                                    ),
+                                    attr='tb_frame',
+                                    ctx=ast.Load()
+                                ),
+                            ],
                             keywords=[],
                         )
                     ),
@@ -276,7 +293,16 @@ def instrument_function(func):
     )
     namespace = {}
     exec(compiled, func.__globals__, namespace)
-    return namespace[func.__name__]
+    instrumented = namespace[func.__name__]
+
+    # Register mapping for custom Pdb list command
+    try:
+        import vibezz as _vzz_mod  # the module we are editing
+    except ImportError:
+        _vzz_mod = sys.modules[__name__]
+    _vzz_mod._VIBEZZ_SOURCE_MAP[instrumented.__code__] = (source_lines, starting_line, func.__code__.co_filename)
+
+    return instrumented
 
 # Test functions
 def faulty_function():
