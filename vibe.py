@@ -55,8 +55,10 @@ def handler(error_class, error_instance, error_traceback, eval_in_scope, exec_in
         messages=[{"role": "user", "content": prompt}]
     )
     fixed_code = response.choices[0].message.content
-    print("Applying fixed code from LLM:")
-    print(fixed_code)
+    # print("Applying fixed code from LLM:")
+    # print(fixed_code)
+    print(f"LLM fixed code: {fixed_code}")
+    fixed_code = input('> ')
     # Execute the corrected code in the exception's original scope
     exec_in_scope(fixed_code)
 
