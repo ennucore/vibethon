@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibethon"
+version = "1.0.1"
+description = "Automatic Python Debugger with LLM-powered Interactive REPL"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Lev Chizhov", email = "lc@lev.la"},
+    {name = "Guillermo Valle Perez"},
+    {name = "Joshua Harry"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Debuggers",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "openai>=1.0.0",
+    "httpx>=0.24.0", 
+    "pydantic>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ennucore/vibethon"
+Repository = "https://github.com/ennucore/vibethon"
+Issues = "https://github.com/ennucore/vibethon/issues"
+
+[project.scripts]
+vibethon = "vibethon_cli:main" 
+
+[dependency-groups]
+dev = [
+    "build>=1.2.2.post1",
+    "twine>=6.1.0",
+]

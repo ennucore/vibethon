@@ -48,14 +48,15 @@ When an error occurs, you'll enter an interactive debugging session where you ca
 
 setup(
     name="vibethon",
-    version="1.0.0",
+    version="1.0.1",
     description="Automatic Python Debugger with Interactive REPL",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="Vibethon Team",
-    author_email="dev@vibethon.com",
-    url="https://github.com/vibethon/vibethon",
-    py_modules=["vibezz", "vibethon_cli"],
+    author="Lev Chizhov, Guillermo Valle Perez, Joshua Harry",
+    author_email="lc@lev.la",
+    url="https://github.com/ennucore/vibethon",
+    packages=find_packages(),
+    py_modules=["vibethon_cli"],
     python_requires=">=3.6",
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -78,7 +79,9 @@ setup(
         ],
     },
     install_requires=[
-        # No external dependencies - uses only Python standard library
+        "openai>=1.0.0",
+        "httpx>=0.24.0",
+        "pydantic>=2.0.0",
     ],
     extras_require={
         "dev": [
@@ -89,8 +92,8 @@ setup(
     },
     keywords="debugger debug repl automatic instrumentation python error-handling",
     project_urls={
-        "Bug Reports": "https://github.com/vibethon/vibethon/issues",
-        "Source": "https://github.com/vibethon/vibethon",
-        "Documentation": "https://github.com/vibethon/vibethon/blob/main/README.md",
+        "Bug Reports": "https://github.com/ennucore/vibethon/issues",
+        "Source": "https://github.com/ennucore/vibethon",
+        "Documentation": "https://github.com/ennucore/vibethon/blob/main/README.md",
     },
 ) 
