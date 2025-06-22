@@ -4,6 +4,12 @@ import inspect
 import ast
 import types
 
+# Use the custom Pdb implementation
+from vdb import CustomPdb
+from llm import ChatGPTPdbLLM
+
+llm = ChatGPTPdbLLM()
+
 class DebuggerContinue(Exception):
     """Exception used to signal that execution should continue"""
     def __init__(self, return_value=None):
@@ -222,13 +228,27 @@ def instrument_function(func):
                 type=ast.Name(id='Exception', ctx=ast.Load()),
                 name='e',
                 body=[
-                    ast.Expr(
+                    # vdb = CustomPdb(llm)
+                    ast.Assign(
+                        targets=[ast.Name(id='vdb', ctx=ast.Store())],
                         value=ast.Call(
-                            func=ast.Name(id='breakpoint', ctx=ast.Load()),
-                            args=[],
+                            func=ast.Name(id='CustomPdb', ctx=ast.Load()),
+                            args=[ast.Name(id='llm', ctx=ast.Load())],
                             keywords=[]
                         )
-                    )
+                    ),
+                    # vdb.set_trace()
+                    ast.Expr(
+                        value=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Name(id='vdb', ctx=ast.Load()),
+                                attr='set_trace',
+                                ctx=ast.Load(),
+                            ),
+                            args=[],
+                            keywords=[],
+                        )
+                    ),
                 ]
             )],
             orelse=[],

@@ -4,36 +4,38 @@ import sys
 
 class CustomPdb(pdb.Pdb):
     def __init__(self, llm_client):
+        """Create a CustomPdb instance.
+
+        We *don't* automatically drop into the debugger here because the
+        caller should be able to specify which frame to attach to.  The caller
+        must therefore invoke ``set_trace(frame)`` (or simply ``set_trace()``
+        for the current frame) after instantiation.
+        """
         self.llm = llm_client
         super().__init__(stdin=self, stdout=self)
-        self.set_trace()
 
     def set_trace(self, frame=None):
-        super().set_trace(frame)
-        import traceback
+        """Enter debugging session at *frame* immediately.
 
-        # Print stack trace to LLM
-        stack = traceback.format_stack()
-        self.llm.receive_pdb_output("PDB started\n" + "".join(stack))
+        Unlike `pdb.Pdb.set_trace`, this version stops exactly in the
+        requested frame instead of on the next trace event.  That ensures
+        commands like `list` show the original source line that raised an
+        exception rather than a line inside our helper code.
+        """
+        if frame is None:
+            frame = sys._getframe().f_back
 
-        # Print local variables to LLM
-        frame = self.curframe
-        if frame is not None:
-            local_vars = frame.f_locals
-            locals_str = "Local variables:\n"
-            for name, value in local_vars.items():
-                try:
-                    val_repr = repr(value)
-                except Exception:
-                    val_repr = "<unrepresentable>"
-                locals_str += f"  {name} = {val_repr}\n"
-            self.llm.receive_pdb_output(locals_str)
+        # Clear internal state and start interaction in the desired frame.
+        self.reset()
+        self.interaction(frame, None)
     
     def write(self, data):
+        # print(data, end="")
         self.llm.receive_pdb_output(data)
     
     def readline(self):
         cmd = self.llm.ask_for_next_command(prompt="pdb> ")
+        # cmd = input("pdb> ")
         return cmd.rstrip("\n") + "\n"
     
     def flush(self):
