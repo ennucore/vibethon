@@ -28,8 +28,8 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 # Import VDB components instead of VibezzDebugger
-from vdb import CustomPdb
-from llm import ChatGPTPdbLLM, DummyLLM
+from vibethon.vdb import CustomPdb
+from vibethon.llm import ChatGPTPdbLLM, DummyLLM
 
 # Use the same LLM object that Vibezz is already configured with
 llm = vibezz.llm
