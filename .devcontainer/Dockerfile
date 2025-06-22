@@ -35,6 +35,15 @@ RUN case $(uname -m) in \
     esac && \
     curl -fsSL https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz | tar -xJf - -C /usr/local --strip-components=1
 
+# Install Go
+RUN case $(uname -m) in \
+    x86_64) ARCH=amd64;; \
+    aarch64) ARCH=arm64;; \
+    *) echo "Unsupported architecture"; exit 1;; \
+    esac && \
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xzf - && \
+    echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
+
 # Switch to user
 USER user
 
