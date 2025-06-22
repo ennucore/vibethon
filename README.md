@@ -19,6 +19,13 @@ Vibethon is an enhanced Python debugger that automatically instruments your code
 # Clone or navigate to the vibethon directory
 cd /path/to/vibethon
 
+# Create and activate a virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
 # Install in development mode
 pip install -e .
 
@@ -28,9 +35,44 @@ pip install .
 
 ### Option 2: Direct usage (without installation)
 
-You can also run vibethon directly:
+You can also run vibethon directly after setting up dependencies:
 
 ```bash
+# Create and activate a virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run directly
+python vibethon_cli.py script.py
+```
+
+### Option 3: Development with Cursor DevContainer (Recommended for contributors)
+
+This project includes a pre-configured devcontainer for seamless development in Cursor:
+
+1. **Open in Cursor**: Open the vibethon directory in Cursor
+2. **Reopen in Container**: When prompted, click "Reopen in Container" or use `Cmd/Ctrl + Shift + P` and select "Dev Containers: Reopen in Container"
+3. **Automatic Setup**: The devcontainer will automatically:
+   - Install Python and all dependencies
+   - Set up the virtual environment
+   - Install the package in development mode
+   - Configure the development environment
+
+**Benefits of using the devcontainer:**
+- Consistent development environment across all contributors
+- No need to manually manage Python versions or dependencies
+- Pre-configured debugging and linting tools
+- Isolated environment that doesn't affect your system Python installation
+
+**To use Vibethon in the devcontainer:**
+```bash
+# The environment is already set up, just run:
+vibethon script.py
+
+# Or for development:
 python vibethon_cli.py script.py
 ```
 
