@@ -47,3 +47,12 @@ class ChatGPTPdbLLM:
         # Store the latest output for context in the next prompt
         print(output, end="")
         self.last_output = output
+
+
+
+class DummyLLM:
+    def ask_for_next_command(self, prompt):
+        return input(prompt)
+    
+    def receive_pdb_output(self, output):
+        print(output, end="")

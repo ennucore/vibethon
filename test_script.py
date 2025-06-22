@@ -14,6 +14,7 @@ def access_list_item(items, index):
     """Function that may cause index error"""
     print(f"Accessing item at index {index} from list: {items}")
     item = items[index]
+    print(f"List length: {len(items)}")
     print(f"Found item: {item}")
     return item
 

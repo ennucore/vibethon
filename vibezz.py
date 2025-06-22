@@ -5,7 +5,6 @@ import ast
 import types
 
 # Use the custom Pdb implementation
-from vdb import CustomPdb
 from llm import ChatGPTPdbLLM
 
 llm = ChatGPTPdbLLM()

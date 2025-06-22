@@ -19,8 +19,88 @@ from importlib.abc import MetaPathFinder, Loader
 import argparse
 from pathlib import Path
 
-# Import our debugger components
-from vibezz import VibezzDebugger, instrument_function, vibezz_debugger
+# Add the current directory to Python path so we can import local modules
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+# Import VDB components instead of VibezzDebugger
+from vdb import CustomPdb
+from llm import ChatGPTPdbLLM, DummyLLM
+
+# Create global LLM and VDB instances
+llm = DummyLLM()
+vdb = CustomPdb(llm)
+
+class VDBDebugger:
+    """Simplified VDB-based debugger for function instrumentation tracking"""
+    
+    def __init__(self):
+        self.instrumented_functions = set()
+        self.llm = llm
+        self.vdb = vdb
+    
+    def instrument_function(self, func):
+        """VDB-based function instrumentation"""
+        import inspect
+        
+        # Retrieve the function's source and starting line number
+        source_lines, starting_line = inspect.getsourcelines(func)
+        source = "".join(source_lines)
+
+        # Parse and adjust line numbers
+        tree = ast.parse(source)
+        ast.increment_lineno(tree, starting_line - 1)
+
+        func_def = tree.body[0]
+        new_body = []
+        
+        for stmt in func_def.body:
+            # Wrap each statement in try/except that uses VDB
+            try_node = ast.Try(
+                body=[stmt],
+                handlers=[ast.ExceptHandler(
+                    type=ast.Name(id='Exception', ctx=ast.Load()),
+                    name='e',
+                    body=[
+                        # vdb.set_trace()
+                        ast.Expr(
+                            value=ast.Call(
+                                func=ast.Attribute(
+                                    value=ast.Name(id='vdb', ctx=ast.Load()),
+                                    attr='set_trace',
+                                    ctx=ast.Load(),
+                                ),
+                                args=[],
+                                keywords=[],
+                            )
+                        ),
+                    ]
+                )],
+                orelse=[],
+                finalbody=[]
+            )
+            
+            ast.copy_location(try_node, stmt)
+            new_body.append(try_node)
+
+        func_def.body = new_body
+        ast.fix_missing_locations(tree)
+
+        compiled = compile(
+            tree,
+            filename=func.__code__.co_filename,
+            mode='exec'
+        )
+        
+        # Execute in function's globals with VDB available
+        namespace = func.__globals__.copy()
+        namespace['vdb'] = self.vdb
+        exec(compiled, namespace)
+        return namespace[func.__name__]
+
+# Create global VDB debugger instance
+vdb_debugger = VDBDebugger()
 
 class VibethonImportHook(MetaPathFinder, Loader):
     """Custom import hook that automatically instruments functions in imported modules"""
@@ -33,8 +113,9 @@ class VibethonImportHook(MetaPathFinder, Loader):
         """Find module spec and mark it for instrumentation"""
         # Don't instrument built-in modules or our own debugger modules
         if (fullname in sys.builtin_module_names or 
-            fullname.startswith('vibezz') or 
-            fullname.startswith('vibethon') or
+            fullname.startswith('vdb') or
+            fullname.startswith('vibethon') or 
+            fullname.startswith('llm') or
             fullname in ['__main__']):
             return None
             
@@ -65,7 +146,7 @@ class VibethonImportHook(MetaPathFinder, Loader):
                 obj.__code__ not in self.debugger.instrumented_functions):
                 
                 try:
-                    instrumented_func = instrument_function(obj)
+                    instrumented_func = self.debugger.instrument_function(obj)
                     setattr(module, name, instrumented_func)
                     self.debugger.instrumented_functions.add(obj.__code__)
                     functions_instrumented += 1
@@ -79,7 +160,7 @@ class VibethonRunner:
     """Main runner for vibethon command"""
     
     def __init__(self):
-        self.debugger = vibezz_debugger
+        self.debugger = vdb_debugger
         self.import_hook = VibethonImportHook(self.debugger)
         
     def setup_environment(self):
@@ -88,7 +169,7 @@ class VibethonRunner:
         if self.import_hook not in sys.meta_path:
             sys.meta_path.insert(0, self.import_hook)
         
-        # Setup custom exception handling
+        # Setup custom exception handling that uses VDB
         old_excepthook = sys.excepthook
         
         def vibethon_excepthook(exc_type, exc_value, exc_traceback):
@@ -97,19 +178,19 @@ class VibethonRunner:
                 old_excepthook(exc_type, exc_value, exc_traceback)
                 return
                 
-            # Use our enhanced error handler
-            self.debugger.handler(
-                exc_type, exc_value, exc_traceback,
-                lambda code: eval(code, {}),  # eval_in_scope
-                lambda code: exec(code, {})   # exec_in_scope
-            )
+            print(f"\n🐛 ERROR DETECTED: {exc_type.__name__}: {exc_value}")
+            print("=" * 50)
+            
+            # Use VDB to debug at the error location
+            if exc_traceback:
+                self.debugger.vdb.set_trace(exc_traceback.tb_frame)
         
         sys.excepthook = vibethon_excepthook
         
         print("🚀 Vibethon environment initialized!")
         print("   - Automatic function instrumentation: ON")
-        print("   - Enhanced error handling: ON")
-        print("   - Debug REPL: ON")
+        print("   - VDB error handling: ON")
+        print("   - LLM-powered debugging: ON")
         print()
     
     def _instrument_ast(self, tree):
@@ -123,40 +204,28 @@ class VibethonRunner:
                 # First, visit child nodes (for nested functions)
                 self.generic_visit(node)
                 
-                # Don't instrument special methods or already instrumented functions
+                # Don't instrument special methods
                 if node.name.startswith('_'):
                     return node
                 
-                # Create new body with each statement wrapped in try/except
+                # Create new body with each statement wrapped in try/except using VDB
                 new_body = []
                 for stmt in node.body:
-                    # Wrap each statement in a Try/Except block
                     try_node = ast.Try(
                         body=[stmt],
                         handlers=[ast.ExceptHandler(
                             type=ast.Name(id='Exception', ctx=ast.Load()),
                             name='e',
                             body=[
+                                # vdb.set_trace()
                                 ast.Expr(
                                     value=ast.Call(
                                         func=ast.Attribute(
-                                            value=ast.Name(id='sys', ctx=ast.Load()),
-                                            attr='excepthook',
+                                            value=ast.Name(id='vdb', ctx=ast.Load()),
+                                            attr='set_trace',
                                             ctx=ast.Load()
                                         ),
-                                        args=[
-                                            ast.Call(
-                                                func=ast.Name(id='type', ctx=ast.Load()),
-                                                args=[ast.Name(id='e', ctx=ast.Load())],
-                                                keywords=[]
-                                            ),
-                                            ast.Name(id='e', ctx=ast.Load()),
-                                            ast.Attribute(
-                                                value=ast.Name(id='e', ctx=ast.Load()),
-                                                attr='__traceback__',
-                                                ctx=ast.Load()
-                                            )
-                                        ],
+                                        args=[],
                                         keywords=[]
                                     )
                                 )
@@ -166,21 +235,16 @@ class VibethonRunner:
                         finalbody=[]
                     )
                     
-                    # Copy location info from original statement
                     ast.copy_location(try_node, stmt)
                     new_body.append(try_node)
                 
-                # Replace function body with instrumented version
                 node.body = new_body
                 self.functions_instrumented += 1
-                
                 return node
         
         # Apply the transformation
         instrumenter = FunctionInstrumenter(self.debugger)
         instrumented_tree = instrumenter.visit(tree)
-        
-        # Fix missing location info
         ast.fix_missing_locations(instrumented_tree)
         
         if instrumenter.functions_instrumented > 0:
@@ -189,7 +253,7 @@ class VibethonRunner:
         return instrumented_tree
     
     def run_script(self, script_path, args=None):
-        """Run a Python script with vibethon instrumentation"""
+        """Run a Python script with VDB instrumentation"""
         if not os.path.exists(script_path):
             print(f"❌ Error: Script '{script_path}' not found")
             return 1
@@ -207,39 +271,36 @@ class VibethonRunner:
             with open(script_path, 'r') as f:
                 code = f.read()
             
-            # Parse the AST to find and instrument functions BEFORE execution
+            # Parse and instrument the AST
             filename = os.path.abspath(script_path)
             tree = ast.parse(code, filename)
-            
-            # Transform the AST to instrument all function definitions
             tree = self._instrument_ast(tree)
-            
-            # Compile the instrumented AST
             compiled = compile(tree, filename, 'exec')
             
-            # Create a module-like namespace
+            # Create script globals with VDB available
             script_globals = {
                 '__name__': '__main__',
                 '__file__': filename,
                 '__doc__': None,
                 '__package__': None,
-                'sys': sys,  # Make sys available for instrumented exception handling
+                'sys': sys,
+                'vdb': self.debugger.vdb,  # Make VDB available to instrumented code
             }
             
-            print(f"🎯 Running '{script_path}' with vibethon...")
+            print(f"🎯 Running '{script_path}' with VDB...")
             print("=" * 50)
             
             # Execute the instrumented code
             exec(compiled, script_globals)
             
         except Exception as e:
-            # This will be caught by our custom exception handler
+            # This will be caught by our VDB exception handler
             raise
         
         return 0
     
     def run_module(self, module_name, args=None):
-        """Run a Python module with vibethon instrumentation"""
+        """Run a Python module with VDB instrumentation"""
         if args is None:
             args = []
         sys.argv = ['-m', module_name] + args
@@ -253,11 +314,9 @@ class VibethonRunner:
             import importlib
             module = importlib.import_module(module_name)
             
-            # If the module has a main function or __main__ block, we need to handle it
             if hasattr(module, 'main'):
                 module.main()
             else:
-                # Try to run as if it were python -m module
                 import runpy
                 runpy.run_module(module_name, run_name='__main__')
                 
@@ -278,7 +337,7 @@ class VibethonRunner:
             print("🎯 Running code with vibethon...")
             print("=" * 50)
             
-            # Parse and instrument the AST before execution
+            # Parse and instrument the AST
             tree = ast.parse(code, '<string>')
             tree = self._instrument_ast(tree)
             compiled = compile(tree, '<string>', 'exec')
@@ -288,7 +347,8 @@ class VibethonRunner:
                 '__file__': '<string>',
                 '__doc__': None,
                 '__package__': None,
-                'sys': sys,  # Make sys available for instrumented exception handling
+                'sys': sys,
+                'vdb': self.debugger.vdb,  # Make VDB available
             }
             
             exec(compiled, script_globals)
