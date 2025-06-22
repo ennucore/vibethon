@@ -103,78 +103,47 @@ class VDBDebugger:
         exec(compiled, namespace)
         return namespace[func.__name__]
 
-class VibethonImportHook:
-    """Import hook that instruments modules as they're imported"""
-    
-    def __init__(self, debugger):
-        self.debugger = debugger
-        self.instrumented_modules = set()
-    
-    def find_spec(self, fullname, path, target=None):
-        """Intercept module imports and instrument them"""
-        # Only skip already instrumented modules
-        if fullname in self.instrumented_modules:
-            return None
-            
-        return None  # Let normal import proceed, we'll instrument after
-    
-    def instrument_module(self, module):
-        """Instrument a module after it's been imported"""
-        if (module.__name__ in self.instrumented_modules or
-            hasattr(module, '__file__') and module.__file__ is None):  # Built-in modules
-            return
-            
+class PostImportHook:
+    """Intercept every import, then instrument the freshly-loaded module."""
+
+    def __init__(self):
+        import builtins as _py_builtins
+        self.original_import = _py_builtins.__import__
+        self.instrumented_modules: set[str] = set()
+
+    def _should_instrument(self, module):
+        """Return True if *module* is a pure-Python module we haven't touched."""
+        if module.__name__ in self.instrumented_modules:
+            return False
+        file = getattr(module, "__file__", None)
+        return bool(file and file.endswith(".py"))
+
+    def __call__(self, name, globals=None, locals=None, fromlist=(), level=0):
+        module = self.original_import(name, globals, locals, fromlist, level)
         try:
-            # Try to instrument any module with Python source files
-            if hasattr(module, '__file__') and module.__file__ and module.__file__.endswith('.py'):
+            if self._should_instrument(module):
                 print(f"🔧 Instrumenting module: {module.__name__}")
                 vibethon.vibezz.vibezz_debugger.auto_instrument(module.__dict__)
                 self.instrumented_modules.add(module.__name__)
-        except Exception as e:
-            print(f"⚠️  Failed to instrument {module.__name__}: {e}")
-            # Don't add to instrumented_modules so we can retry later if needed
-
-class PostImportHook:
-    """Hook to instrument modules after they're imported"""
-    
-    def __init__(self, import_hook):
-        self.import_hook = import_hook
-        # builtins.__import__ is always the real function
-        import builtins as _py_builtins
-        self.original_import = _py_builtins.__import__
-        # Fallback: if __builtins__ is a dict, ensure we still reference the true function
-        # (optional, for clarity)
-        # Note: we purposefully do not assign back to __builtins__.__import__ here.
-    
-    def __call__(self, name, globals=None, locals=None, fromlist=(), level=0):
-        module = self.original_import(name, globals, locals, fromlist, level)
-        # Instrument after import completes
-        try:
-            self.import_hook.instrument_module(module)
-        except Exception as _instr_err:
-            # Gracefully ignore failures to keep import flow unbroken
-            pass
+        except Exception as err:
+            print(f"⚠️  Failed to instrument {module.__name__}: {err}")
         return module
 
 # Create global Vibezz debugger instance
-vdb_debugger = vibethon.vibezz.vibezz_debugger      # was: vdb_debugger = VDBDebugger()
+vdb_debugger = vibethon.vibezz.vibezz_debugger
 
 class VibethonRunner:
     """Main runner for vibethon command"""
     
     def __init__(self):
         self.debugger = vdb_debugger
-        self.import_hook = VibethonImportHook(self.debugger)
-        self.post_import_hook = PostImportHook(self.import_hook)
+        self.post_import_hook = PostImportHook()
         
     def setup_environment(self):
         """Setup the vibethon environment"""
-        # Install our import hooks
-        if self.import_hook not in sys.meta_path:
-            sys.meta_path.insert(0, self.import_hook)
-        
-        # Install post-import hook
-        __builtins__.__import__ = self.post_import_hook
+        # Monkey-patch built-in import so every future import gets instrumented
+        import builtins as _py_builtins
+        _py_builtins.__import__ = self.post_import_hook
             
         print("🚀 Vibethon environment initialized!")
         print("   - Automatic function instrumentation: ON")

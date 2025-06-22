@@ -85,120 +85,6 @@ class VibezzDebugger:
                 print("Please enter a valid number")
             except (EOFError, KeyboardInterrupt):
                 return frames[-1]  # Default to innermost frame
-    
-    def start_repl(self, frame, exc_type, exc_value):
-        """Start a simple REPL in the given frame's scope"""
-        local_vars = frame.f_locals
-        global_vars = frame.f_globals
-        
-        print(f"🔍 DEBUG REPL - You are now in the scope where {exc_type.__name__} occurred")
-        print("Available commands:")
-        print("  - Type any Python expression to evaluate it")
-        print("  - Use 'locals()' to see local variables")
-        print("  - Use 'globals()' to see global variables") 
-        print("  - Type 'continue <value>' to continue execution with a return value")
-        print("  - Type 'continue' to continue execution with None")
-        print("  - Type 'quit' or 'exit' to exit the debugger")
-        print("  - Type 'vars' to see current local variables")
-        print("=" * 50)
-        
-        # Show current local variables
-        print("Current local variables:")
-        for name, value in local_vars.items():
-            if not name.startswith('__') and name not in ['frame', 'eval_in_scope', 'exec_in_scope', 'e']:
-                print(f"  {name} = {repr(value)}")
-        print()
-        
-        while True:
-            try:
-                # Get user input
-                user_input = input("debug> ").strip()
-                
-                # Check for exit commands
-                if user_input.lower() in ['quit', 'exit', 'q']:
-                    print("Exiting debugger...")
-                    break
-                
-                # Check for continue commands
-                if user_input.lower().startswith('continue'):
-                    parts = user_input.split(' ', 1)
-                    if len(parts) > 1:
-                        # Try to evaluate the return value
-                        try:
-                            return_value = eval(parts[1], global_vars, local_vars)
-                        except Exception as e:
-                            print(f"Error evaluating return value: {e}")
-                            continue
-                    else:
-                        return_value = None
-                    
-                    raise DebuggerContinue(return_value)
-                
-                # Special command to show variables
-                if user_input.lower() == 'vars':
-                    print("Local variables:")
-                    for name, value in local_vars.items():
-                        if not name.startswith('__') and name not in ['frame', 'eval_in_scope', 'exec_in_scope', 'e']:
-                            print(f"  {name} = {repr(value)}")
-                    continue
-                
-                # Skip empty input
-                if not user_input:
-                    continue
-                
-                # Try to evaluate as expression first
-                try:
-                    result = eval(user_input, global_vars, local_vars)
-                    if result is not None:
-                        print(f"→ {repr(result)}")
-                except SyntaxError:
-                    # If it's not a valid expression, try to execute as statement
-                    try:
-                        exec(user_input, global_vars, local_vars)
-                    except Exception as e:
-                        print(f"Error: {e}")
-                except Exception as e:
-                    print(f"Error: {e}")
-                    
-            except (EOFError, KeyboardInterrupt):
-                print("\nExiting debugger...")
-                break
-    
-    def handler(self, error_class, error_instance, error_traceback, eval_in_scope, exec_in_scope):
-        """Enhanced error handler with REPL capabilities"""
-        print(f"\n🐛 ERROR DETECTED: {error_class.__name__}: {error_instance}")
-        print("=" * 50)
-        
-        # Show all frames and let user select one
-        frames = []
-        frame = error_traceback
-        while frame is not None:
-            frames.append(frame)
-            frame = frame.tb_next
-        
-        # Print the traceback
-        print("Traceback:")
-        traceback.print_exception(error_class, error_instance, error_traceback)
-        print("=" * 50)
-        
-        # Let user select frame or default to innermost
-        selected_frame = self.select_frame(frames)
-        
-        # Start the debug REPL
-        try:
-            self.start_repl(selected_frame.tb_frame, error_class, error_instance)
-        except DebuggerContinue as cont:
-            # User wants to continue execution
-            print(f"Continuing execution by setting return value: {repr(cont.return_value)}")
-            # If continue was called, execute code to set a variable with the return value
-            if cont.return_value is not None:
-                exec_in_scope(f"__vibezz_continue_value__ = {repr(cont.return_value)}")
-            else:
-                exec_in_scope("__vibezz_continue_value__ = None")
-            return
-        
-        # If no continue was called, just pass (statement will be skipped)
-        print("Skipping failed statement and continuing execution...")
 
 # Create global debugger instance
 vibezz_debugger = VibezzDebugger()
@@ -251,14 +137,11 @@ def instrument_function(func):
                         )
                     ),
                     
-                    # vdb = CustomPdb(llm)
-                    ast.Assign(
-                        targets=[ast.Name(id='vdb', ctx=ast.Store())],
-                        value=ast.Call(
-                            func=ast.Name(id='CustomPdb', ctx=ast.Load()),
-                            args=[ast.Name(id='llm', ctx=ast.Load())],
-                            keywords=[]
-                        )
+                    # Import vdb
+                    ast.ImportFrom(
+                        module='vibethon',
+                        names=[ast.alias(name='vdb', asname=None)],
+                        level=0
                     ),
                     
                     # vdb.set_trace(_original_frame)
@@ -303,10 +186,6 @@ def instrument_function(func):
     namespace = {}
     globals_dict = func.__globals__
 
-    # ensure the debugger helpers are visible
-    globals_dict.setdefault("CustomPdb", CustomPdb)
-    globals_dict.setdefault("llm", llm)   # llm is the global ChatGPTPdbLLM instance
-
     exec(compiled, globals_dict, namespace)
     instrumented = namespace[func.__name__]
 
@@ -320,72 +199,4 @@ def instrument_function(func):
     return instrumented
 
 
-
-if __name__ == "__main__":
-    print("🚀 Starting Vibezz - Enhanced Python Debugger")
-    print("=" * 50)
-
-    
-    print("\n" + "=" * 50)
-    print("🎯 Running test functions...")
-    print("=" * 50)
-    
-    # ------------------------------------------------------------
-    # Dynamically load demo functions from ``no_exceptions_only_vibes``
-    # ------------------------------------------------------------
-
-    try:
-        vibes_mod = importlib.import_module("no_exceptions_only_vibes")
-    except ModuleNotFoundError:
-        print("❌ Module 'no_exceptions_only_vibes' not found. Aborting.")
-        sys.exit(1)
-
-    # Instrument functions inside that module so our debugger hooks are active
-    vibezz_debugger.auto_instrument(module_globals=vibes_mod.__dict__)
-
-    # Collect all user-defined functions (skip private/dunder)
-    tests = [
-        (name, obj) for name, obj in vibes_mod.__dict__.items()
-        if isinstance(obj, types.FunctionType) and not name.startswith("__")
-    ]
-
-    if not tests:
-        print("⚠️  No callable functions found in 'no_exceptions_only_vibes'. Nothing to run.")
-        sys.exit(0)
-
-    # ---- Allow selection of a subset of tests by index (1-based) ----
-    # Specify the indices of the tests you want to run (1-based)
-    SELECTED_TEST_INDICES = [0,6,10]  # <-- Change this list to select which tests to run
-
-    # Filter the tests list to only include the selected indices
-    selected_tests = [
-        tests[i - 1] for i in SELECTED_TEST_INDICES
-        if 1 <= i <= len(tests)
-    ]
-
-    if not selected_tests:
-        print("⚠️  No tests selected. Please update SELECTED_TEST_INDICES.")
-        sys.exit(0)
-
-    passed, failed = 0, 0
-
-    for idx, (name, fn) in enumerate(selected_tests, 1):
-        print(f"\n{idx}. Testing {name}() ...")
-        try:
-            result = fn()
-            print(f"✅ {name} executed successfully – return value: {result}")
-            passed += 1
-        except Exception as e:
-            print(f"❌ {name} raised an exception: {e}")
-            import traceback; traceback.print_exc()
-            failed += 1
-
-    print("\n" + "=" * 50)
-    print(f"Test summary: {passed} passed / {passed + failed} total")
-
-    if failed == 0:
-        print("🎉 All functions executed without unhandled exceptions!")
-    else:
-        print("⚠️  Some functions failed – see details above.")
-
-    print("\n✅ Vibezz debugging session complete!") 
+# The demo code has been moved to examples/vibezz_demo.py 
