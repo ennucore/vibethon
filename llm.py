@@ -1,4 +1,5 @@
 import openai
+import time
 
 class ChatGPTPdbLLM:
     def __init__(self, model="gpt-4.1", system_message=None):
@@ -8,8 +9,9 @@ class ChatGPTPdbLLM:
         self.system_message = system_message or (
             "You are an expert Python debugger, interacting in a pdb REPL session. "
             "You have access to pdb commands (next, continue, list, set variables, eval variables, etc). "
-            "Your goal is to figure out what is wrong with the code, and suggest the right pdb commands to fix the execution at runtime, "
-            "so that execution can continue successfully. If you make changes at runtime, print suggestions for what should be fixed in the source code. "
+            "Your goal is to use the available context (especially local variables and the current stack frame) to determine what changes are needed in the local scope to allow execution to continue appropriately. "
+            "Figure out what is wrong with the code, and suggest the right pdb commands to fix the execution at runtime, so that execution can continue successfully. "
+            "If you make changes at runtime, print suggestions for what should be fixed in the source code. "
             "Respond ONLY with the next pdb command to execute, and optionally a short comment (in a print statement) explaining your reasoning or suggestion."
         )
         self._init_messages()
@@ -41,6 +43,7 @@ class ChatGPTPdbLLM:
         reply = response.choices[0].message.content.strip()
         self.messages.append({"role": "assistant", "content": reply})
         print(reply)
+        time.sleep(5)
         return reply
 
     def receive_pdb_output(self, output):

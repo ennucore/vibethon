@@ -24,6 +24,13 @@ class CustomPdb(pdb.Pdb):
         """
         if frame is None:
             frame = sys._getframe().f_back
+        
+        import traceback
+
+        print("\n🔎 Entering new pdb session!")
+        print("Stack trace (most recent call last):")
+        traceback.print_stack(frame)
+        print("=" * 50)
 
         # Clear internal state and start interaction in the desired frame.
         self.reset()
@@ -40,6 +47,12 @@ class CustomPdb(pdb.Pdb):
     
     def flush(self):
         pass
+
+    def do_locals(self, arg):
+        from pprint import saferepr
+        safe = {k: v for k, v in self.curframe.f_locals.items()
+                if k not in ('e', 'vdb')}
+        self.message(saferepr(safe))
 
 if __name__ == "__main__":
     from llm import DummyLLM
