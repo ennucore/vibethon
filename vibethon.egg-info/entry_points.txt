@@ -1,0 +1,2 @@
+[console_scripts]
+vibethon = vibethon_cli:main

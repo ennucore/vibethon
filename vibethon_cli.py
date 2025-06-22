@@ -139,11 +139,21 @@ class PostImportHook:
     
     def __init__(self, import_hook):
         self.import_hook = import_hook
-        self.original_import = __builtins__.__import__
+        # builtins.__import__ is always the real function
+        import builtins as _py_builtins
+        self.original_import = _py_builtins.__import__
+        # Fallback: if __builtins__ is a dict, ensure we still reference the true function
+        # (optional, for clarity)
+        # Note: we purposefully do not assign back to __builtins__.__import__ here.
     
     def __call__(self, name, globals=None, locals=None, fromlist=(), level=0):
         module = self.original_import(name, globals, locals, fromlist, level)
-        self.import_hook.instrument_module(module)
+        # Instrument after import completes
+        try:
+            self.import_hook.instrument_module(module)
+        except Exception as _instr_err:
+            # Gracefully ignore failures to keep import flow unbroken
+            pass
         return module
 
 # Create global Vibezz debugger instance
