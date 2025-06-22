@@ -190,112 +190,70 @@ vibezz_debugger = VibezzDebugger()
 def instrument_function(func):
     """
     Wrap each statement in the given function in a try/except that catches errors
-    and opens the enhanced debugger REPL.
+    and calls breakpoint().
     """
-    source_lines, _ = inspect.getsourcelines(func)
+    # Retrieve the function's source **and** its starting line number inside the
+    # original file.  This allows us to realign the generated AST so that its
+    # line numbers match the ones that appear in the file on disk.  When the
+    # debugger (e.g. pdb) relies on the `co_firstlineno` and individual node
+    # line numbers it will therefore be able to display the correct lines when
+    # you issue the `list` command.
+    source_lines, starting_line = inspect.getsourcelines(func)
     source = "".join(source_lines)
+
+    # Parse the function body into an AST and then offset all line numbers so
+    # that they are relative to the *file*, not the extracted snippet starting
+    # at line 1.  Without this adjustment the debugger thinks everything starts
+    # at the top of the file which is exactly the behaviour we are trying to
+    # fix.
     tree = ast.parse(source)
+    ast.increment_lineno(tree, starting_line - 1)  # align with real file lines
+
     func_def = tree.body[0]  # assumes the first node is the FunctionDef
+
     new_body = []
-    
     for stmt in func_def.body:
-        new_body.append(ast.Try(
+        # Wrap each original statement in a Try/Except so that we can break
+        # into the debugger on *any* exception while still preserving the
+        # original source location of that statement.
+        try_node = ast.Try(
             body=[stmt],
             handlers=[ast.ExceptHandler(
                 type=ast.Name(id='Exception', ctx=ast.Load()),
                 name='e',
                 body=[
-                    # Capture the frame where the exception occurred
-                    ast.Assign(
-                        targets=[ast.Name(id='frame', ctx=ast.Store())],
-                        value=ast.Attribute(
-                            value=ast.Attribute(
-                                value=ast.Name(id='e', ctx=ast.Load()),
-                                attr='__traceback__',
-                                ctx=ast.Load()
-                            ),
-                            attr='tb_frame',
-                            ctx=ast.Load()
-                        )
-                    ),
-                    # Provide an eval function in that frame's scope
-                    ast.Assign(
-                        targets=[ast.Name(id='eval_in_scope', ctx=ast.Store())],
-                        value=ast.Lambda(
-                            args=ast.arguments(
-                                posonlyargs=[], args=[ast.arg(arg='code', annotation=None)], vararg=None,
-                                kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]
-                            ),
-                            body=ast.Call(
-                                func=ast.Name(id='eval', ctx=ast.Load()),
-                                args=[
-                                    ast.Name(id='code', ctx=ast.Load()),
-                                    ast.Attribute(value=ast.Name(id='frame', ctx=ast.Load()), attr='f_globals', ctx=ast.Load()),
-                                    ast.Attribute(value=ast.Name(id='frame', ctx=ast.Load()), attr='f_locals', ctx=ast.Load())
-                                ],
-                                keywords=[]
-                            )
-                        )
-                    ),
-                    # Provide an exec function in that frame's scope
-                    ast.Assign(
-                        targets=[ast.Name(id='exec_in_scope', ctx=ast.Store())],
-                        value=ast.Lambda(
-                            args=ast.arguments(
-                                posonlyargs=[], args=[ast.arg(arg='code', annotation=None)], vararg=None,
-                                kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[]
-                            ),
-                            body=ast.Call(
-                                func=ast.Name(id='exec', ctx=ast.Load()),
-                                args=[
-                                    ast.Name(id='code', ctx=ast.Load()),
-                                    ast.Attribute(value=ast.Name(id='frame', ctx=ast.Load()), attr='f_globals', ctx=ast.Load()),
-                                    ast.Attribute(value=ast.Name(id='frame', ctx=ast.Load()), attr='f_locals', ctx=ast.Load())
-                                ],
-                                keywords=[]
-                            )
-                        )
-                    ),
-                    # Call enhanced handler with REPL capabilities
                     ast.Expr(
                         value=ast.Call(
-                            func=ast.Attribute(
-                                value=ast.Name(id='vibezz_debugger', ctx=ast.Load()),
-                                attr='handler',
-                                ctx=ast.Load()
-                            ),
-                            args=[
-                                ast.Call(func=ast.Name(id='type', ctx=ast.Load()), args=[ast.Name(id='e', ctx=ast.Load())], keywords=[]),
-                                ast.Name(id='e', ctx=ast.Load()),
-                                ast.Attribute(value=ast.Name(id='e', ctx=ast.Load()), attr='__traceback__', ctx=ast.Load()),
-                                ast.Name(id='eval_in_scope', ctx=ast.Load()),
-                                ast.Name(id='exec_in_scope', ctx=ast.Load())
-                            ],
+                            func=ast.Name(id='breakpoint', ctx=ast.Load()),
+                            args=[],
                             keywords=[]
                         )
-                    ),
-                    # Check if user provided a continue value and use it
-                    ast.If(
-                        test=ast.Compare(
-                            left=ast.Constant(value='__vibezz_continue_value__'),
-                            ops=[ast.In()],
-                            comparators=[ast.Call(func=ast.Name(id='locals', ctx=ast.Load()), args=[], keywords=[])]
-                        ),
-                        body=[
-                            # If continue value exists, assign it to a result variable if applicable
-                            ast.Pass()  # Placeholder - the continue value will be handled by the debugger
-                        ],
-                        orelse=[]
                     )
                 ]
             )],
             orelse=[],
             finalbody=[]
-        ))
-    
+        )
+
+        # Make sure the newly-created Try node inherits the location (line
+        # number, column offset) of the statement it is wrapping.  This keeps
+        # the mapping between byte-code line numbers and the original source
+        # intact so that debuggers can display the right context.
+        ast.copy_location(try_node, stmt)
+
+        new_body.append(try_node)
+
     func_def.body = new_body
+
+    # Fill in any missing lineno/col_offset fields that we didn't explicitly
+    # set above.
     ast.fix_missing_locations(tree)
-    compiled = compile(tree, filename=func.__code__.co_filename, mode='exec')
+
+    compiled = compile(
+        tree,
+        filename=func.__code__.co_filename,  # keep original filename
+        mode='exec'
+    )
     namespace = {}
     exec(compiled, func.__globals__, namespace)
     return namespace[func.__name__]
