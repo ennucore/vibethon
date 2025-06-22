@@ -1,4 +1,4 @@
-from models import models
+from vibethon.models import models
 from openai import OpenAI
 import time
 

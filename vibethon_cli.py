@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Vibethon - Automatic Python Debugger
-A command-line tool that runs Python scripts with automatic function instrumentation.
+Vibethon CLI - Command line interface for automatic Python debugging
 
 Usage:
     vibethon script.py [args...]
@@ -18,7 +17,11 @@ import importlib.machinery
 from importlib.abc import MetaPathFinder, Loader
 import argparse
 from pathlib import Path
-import vibezz                      # ← NEW – pull in the Vibezz framework
+
+# Import from the new module structure
+from vibethon.vdb import CustomPdb
+from vibethon.llm import ChatGPTPdbLLM, DummyLLM
+import vibethon.vibezz                      # ← UPDATED – pull in the Vibezz framework
 import inspect
 import runpy
 
@@ -27,12 +30,8 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-# Import VDB components instead of VibezzDebugger
-from vibethon.vdb import CustomPdb
-from vibethon.llm import ChatGPTPdbLLM, DummyLLM
-
 # Use the same LLM object that Vibezz is already configured with
-llm = vibezz.llm
+llm = vibethon.vibezz.llm                   # ← UPDATED
 
 # Provide a standalone pdb instance (only for on-the-fly use)
 vdb = CustomPdb(llm)               # ← NEW
@@ -129,7 +128,7 @@ class VibethonImportHook:
             # Try to instrument any module with Python source files
             if hasattr(module, '__file__') and module.__file__ and module.__file__.endswith('.py'):
                 print(f"🔧 Instrumenting module: {module.__name__}")
-                vibezz.vibezz_debugger.auto_instrument(module.__dict__)
+                vibethon.vibezz.vibezz_debugger.auto_instrument(module.__dict__)
                 self.instrumented_modules.add(module.__name__)
         except Exception as e:
             print(f"⚠️  Failed to instrument {module.__name__}: {e}")
@@ -148,7 +147,7 @@ class PostImportHook:
         return module
 
 # Create global Vibezz debugger instance
-vdb_debugger = vibezz.vibezz_debugger      # was: vdb_debugger = VDBDebugger()
+vdb_debugger = vibethon.vibezz.vibezz_debugger      # was: vdb_debugger = VDBDebugger()
 
 class VibethonRunner:
     """Main runner for vibethon command"""
@@ -228,7 +227,7 @@ class VibethonRunner:
 
             # Instrument the main module's functions
             print(f"🔧 Instrumenting main module: {module_name}")
-            vibezz.vibezz_debugger.auto_instrument(module.__dict__)
+            vibethon.vibezz.vibezz_debugger.auto_instrument(module.__dict__)
 
             # ── Run entry-point ────────────────────────────────────────────
             if callable(module.__dict__.get("main")):

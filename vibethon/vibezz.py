@@ -6,8 +6,8 @@ import types
 import importlib
 
 # Use the custom Pdb implementation
-from llm import ChatGPTPdbLLM
-from vdb import CustomPdb
+from vibethon.llm import ChatGPTPdbLLM
+from vibethon.vdb import CustomPdb
 
 # Mapping from code objects of instrumented functions to their original
 # source lines and the starting line number in the file.  This allows the
@@ -312,7 +312,7 @@ def instrument_function(func):
 
     # Register mapping for custom Pdb list command
     try:
-        import vibezz as _vzz_mod  # the module we are editing
+        import vibethon.vibezz as _vzz_mod  # the module we are editing
     except ImportError:
         _vzz_mod = sys.modules[__name__]
     _vzz_mod._VIBEZZ_SOURCE_MAP[instrumented.__code__] = (source_lines, starting_line, func.__code__.co_filename)
