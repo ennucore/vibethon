@@ -4,7 +4,7 @@
   "service": "app",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "remoteEnv": {
-    "PATH": "${containerEnv:PATH}"
+    "PATH": "/usr/local/go/bin:${containerEnv:PATH}"
   },
   "features": {
     "ghcr.io/devcontainers/features/docker-from-docker:latest": {}

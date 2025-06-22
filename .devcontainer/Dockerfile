@@ -1,6 +1,7 @@
 FROM ubuntu:24.04
 
-ENV NODE_VERSION=24.0.1
+ENV NODE_VERSION=24.0.1 \
+    GO_VERSION=1.24.4
 
 # Install system dependencies
 RUN apt-get update && apt-get upgrade -y && apt-get install -y \
