@@ -14,8 +14,8 @@ import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
+from auth import get_ai_credentials
 
-from openai import OpenAI
 import shutil
 import textwrap
 import time
@@ -35,7 +35,7 @@ DEFAULT_MODEL = os.getenv("VIBETHON_OPENAI_MODEL", "anthropic/claude-sonnet-4")
 
 # We create **one** client instance at import time so that connection pooling
 # works across multiple ``ChatGPTPdbLLM`` objects.
-openai = OpenAI(base_url=DEFAULT_BASE_URL)
+openai = get_ai_credentials()
 
 # Set-up an opt-in logger – by default it inherits the root logger's level which
 # is usually ``WARNING``.  Users can enable more verbose output via
@@ -76,7 +76,7 @@ def _print_coloured_box(text: str, *, title: str = "", colour: str = FG_CYAN) ->
         wrapped = textwrap.wrap(raw, width=wrap_width) or [""]
         lines.extend(wrapped)
 
-    content_width = max(len(l) for l in lines)
+    content_width = max(len(x) for x in lines)
 
     # ------------------------------------------------------------------
     # Handle title (truncate if necessary)
@@ -346,11 +346,14 @@ In your help message, please use a baby emoji so that the need for help is clear
         def _call_llm() -> str:
             response_inner = openai.chat.completions.create(
                 model=self.model,
-                messages=self.messages,
+                messages=self.messages,  # type: ignore
                 temperature=0.2,
                 max_tokens=256,
             )
-            return response_inner.choices[0].message.content.strip()
+            raw_response = response_inner.choices[0].message.content
+            if raw_response is None:
+                raise ValueError("No response from LLM")
+            return raw_response.strip()
 
         # First call to the model
         raw_reply_full: str = _call_llm()
